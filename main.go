@@ -105,17 +105,18 @@ var (
 	driversTable      *widget.Table
 	constructorsTable *widget.Table
 
-	// Элементы для начального экрана
+	numColsResults      int
+	numColsDrivers      int
+	numColsConstructors int
+
 	seasonEntryForInputScreen *widget.Entry
 	statusTextForInputScreen  binding.String
 	statusLabelForInputScreen *widget.Label
 
-	// Элементы для экрана с данными (включая свою строку поиска)
 	seasonEntryForDataView *widget.Entry
 	statusTextForDataView  binding.String
 	statusLabelForDataView *widget.Label
 
-	// Экраны
 	inputScreen    fyne.CanvasObject
 	dataViewScreen fyne.CanvasObject
 )
@@ -125,9 +126,10 @@ func main() {
 	window = myApp.NewWindow("F1 Race Catalog")
 	window.Resize(fyne.NewSize(1200, 800))
 
-	// --- Элементы для НАЧАЛЬНОГО экрана ---
+	// Инициализация элементов для экрана ввода
 	seasonEntryForInputScreen = widget.NewEntry()
 	seasonEntryForInputScreen.SetPlaceHolder("Enter season year (e.g., 2023)")
+
 	statusTextForInputScreen = binding.NewString()
 	statusLabelForInputScreen = widget.NewLabelWithData(statusTextForInputScreen)
 	statusLabelForInputScreen.Wrapping = fyne.TextWrapWord
@@ -135,21 +137,22 @@ func main() {
 	loadButtonForInputScreen := widget.NewButtonWithIcon("Load Data", theme.SearchIcon(), func() {
 		loadDataForYear(seasonEntryForInputScreen.Text, statusTextForInputScreen, true)
 	})
-	seasonEntryForInputScreen.OnSubmitted = func(_ string) {
-		loadButtonForInputScreen.OnTapped()
-	}
+	seasonEntryForInputScreen.OnSubmitted = func(_ string) { loadButtonForInputScreen.OnTapped() }
+
+	// Создаем контейнер с фиксированной шириной поля ввода
+	wrappedEntry := container.NewGridWrap(fyne.NewSize(300, seasonEntryForInputScreen.MinSize().Height), seasonEntryForInputScreen)
 	inputContainer := container.NewVBox(
 		widget.NewLabel("Enter Formula 1 Season Year"),
-		seasonEntryForInputScreen,
+		wrappedEntry,
 		loadButtonForInputScreen,
 		statusLabelForInputScreen,
 	)
 	inputScreen = container.NewCenter(inputContainer)
 
-	// --- Элементы для ЭКРАНА С ДАННЫМИ ---
-	// Поисковая строка для экрана с данными
+	// Инициализация элементов для экрана данных
 	seasonEntryForDataView = widget.NewEntry()
 	seasonEntryForDataView.SetPlaceHolder("Enter another year...")
+
 	statusTextForDataView = binding.NewString()
 	statusLabelForDataView = widget.NewLabelWithData(statusTextForDataView)
 	statusLabelForDataView.Wrapping = fyne.TextWrapWord
@@ -157,13 +160,12 @@ func main() {
 	loadButtonForDataView := widget.NewButtonWithIcon("Load New Season", theme.SearchIcon(), func() {
 		loadDataForYear(seasonEntryForDataView.Text, statusTextForDataView, false)
 	})
-	seasonEntryForDataView.OnSubmitted = func(_ string) {
-		loadButtonForDataView.OnTapped()
-	}
+	seasonEntryForDataView.OnSubmitted = func(_ string) { loadButtonForDataView.OnTapped() }
+
 	searchBarForDataView := container.NewBorder(nil, nil, nil, loadButtonForDataView, seasonEntryForDataView)
 	topPanelForDataView := container.NewVBox(searchBarForDataView, statusLabelForDataView)
 
-	// Таблицы
+	// Инициализация таблиц
 	resultsTable = widget.NewTable(
 		func() (int, int) { return 0, 0 },
 		func() fyne.CanvasObject { return widget.NewLabel("") },
@@ -180,44 +182,51 @@ func main() {
 		func(id widget.TableCellID, cell fyne.CanvasObject) {},
 	)
 
-	// Вкладки
+	// Создание вкладок
 	tabs = container.NewAppTabs()
 	initialRacesContent := container.NewCenter(widget.NewLabel("Data will appear here after loading a season."))
 	racesTabItem = container.NewTabItem("Races Calendar", initialRacesContent)
-
 	tabs.Append(racesTabItem)
 	tabs.Append(container.NewTabItem("Race Results", container.NewVScroll(resultsTable)))
 	tabs.Append(container.NewTabItem("Drivers", container.NewVScroll(driversTable)))
 	tabs.Append(container.NewTabItem("Constructors", container.NewVScroll(constructorsTable)))
 
-	// Собираем dataViewScreen
-	dataViewScreen = container.NewBorder(
-		topPanelForDataView, // Top
-		nil, nil, nil,      // Bottom, Left, Right
-		tabs,               // Center
-	)
+	dataViewScreen = container.NewBorder(topPanelForDataView, nil, nil, nil, tabs)
 
-	// Начальный экран при запуске
 	window.SetContent(inputScreen)
 	window.ShowAndRun()
 }
-
-// loadDataForYear загружает данные и обновляет UI.
-// year: год для загрузки.
-// statusUpdater: binding для метки статуса (на inputScreen или dataViewScreen).
-// isFirstLoad: true, если это первая загрузка с inputScreen; false, если перезагрузка с dataViewScreen.
-func loadDataForYear(year string, statusUpdater binding.String, isFirstLoad bool) {
-	statusUpdater.Set("Loading season data...")
-	if !isFirstLoad { // Если перезагрузка, сбрасываем UI экрана данных
-		resetUIDataForDataView()
-	} else {
-		// При первой загрузке нет нужды сбрасывать UI экрана данных, т.к. он еще не отображен
-		// Но можем очистить статус предыдущей попытки на inputScreen, если была ошибка
+func resizeTableColumnsEqually(table *widget.Table, numCols int) {
+	if table == nil || numCols == 0 || tabs == nil || !tabs.Visible() || window.Content() != dataViewScreen {
+		return
+	}
+	availableWidth := tabs.Size().Width
+	if availableWidth <= 0 {
+		// fmt.Println("resizeTableColumnsEqually: availableWidth for tabs is 0 or less, cannot resize.")
+		return
 	}
 
+	colWidth := availableWidth / float32(numCols)
+	minPracticalWidth := float32(50)
+
+	if colWidth < minPracticalWidth && float32(numCols)*minPracticalWidth > availableWidth {
+		colWidth = minPracticalWidth
+	} else if colWidth < 10 {
+		colWidth = 10
+	}
+
+	for i := 0; i < numCols; i++ {
+		table.SetColumnWidth(i, colWidth)
+	}
+}
+
+func loadDataForYear(year string, statusUpdater binding.String, isFirstLoad bool) {
+	statusUpdater.Set("Loading season data...")
+	if !isFirstLoad {
+		resetUIDataForDataView()
+	}
 
 	placeholderErrorMsg := "Error loading data. Please check the year or your connection."
-	placeholderSuccessMsg := "Data loaded. Select a race."
 	if year == "" {
 		statusUpdater.Set("Please enter a season year.")
 		if !isFirstLoad {
@@ -271,9 +280,7 @@ func loadDataForYear(year string, statusUpdater binding.String, isFirstLoad bool
 		return
 	}
 
-	var apiResponseData struct {
-		MRData MRData `json:"MRData"`
-	}
+	var apiResponseData struct{ MRData MRData `json:"MRData"` }
 	if err := json.Unmarshal(body, &apiResponseData); err != nil {
 		statusUpdater.Set("Error parsing JSON: " + err.Error())
 		if !isFirstLoad {
@@ -293,43 +300,26 @@ func loadDataForYear(year string, statusUpdater binding.String, isFirstLoad bool
 		return
 	}
 
-	// --- Успешная загрузка данных ---
 	seasonWikiLink := widget.NewHyperlink("Season Info", nil)
 	wikiURLStr := fmt.Sprintf("https://en.wikipedia.org/wiki/%s_Formula_One_World_Championship", year)
 	parsedWikiURL := parseURL(wikiURLStr)
-	if parsedWikiURL != nil {
-		seasonWikiLink.SetURL(parsedWikiURL)
-	} else {
-		seasonWikiLink.SetText("Season Info (URL error)")
-	}
+	if parsedWikiURL != nil { seasonWikiLink.SetURL(parsedWikiURL) } else { seasonWikiLink.SetText("Season Info (URL error)") }
 
 	races := apiResponseData.MRData.RaceTable.Races
 	raceList := widget.NewList(
 		func() int { return len(races) },
 		func() fyne.CanvasObject { return widget.NewLabel("Race Template") },
-		func(id widget.ListItemID, o fyne.CanvasObject) {
-			o.(*widget.Label).SetText(fmt.Sprintf("Round %s: %s", races[id].Round, races[id].RaceName))
-		},
+		func(id widget.ListItemID, o fyne.CanvasObject) { o.(*widget.Label).SetText(fmt.Sprintf("Round %s: %s", races[id].Round, races[id].RaceName))},
 	)
-
-	raceInfoText := widget.NewLabel(placeholderSuccessMsg) // Начальное сообщение в деталях
+	raceInfoText := widget.NewLabel("Select a race to see details.")
 	raceInfoText.Wrapping = fyne.TextWrapWord
 	raceWikiLink := widget.NewHyperlink("", nil)
-
-	raceDetailsContainer := container.NewVScroll(container.NewVBox(
-		raceInfoText,
-		raceWikiLink,
-	))
-
-	split := container.NewHSplit(
-		container.NewVScroll(raceList),
-		raceDetailsContainer,
-	)
+	raceDetailsContainer := container.NewVScroll(container.NewVBox(raceInfoText, raceWikiLink))
+	split := container.NewHSplit(container.NewVScroll(raceList), raceDetailsContainer)
 	split.SetOffset(0.3)
-
 	topContentForRacesTab := container.NewVBox(seasonWikiLink, widget.NewSeparator())
 	racesTabItem.Content = container.NewBorder(topContentForRacesTab, nil, nil, nil, split)
-	racesTabItem.Content.Refresh() // Обновляем контент вкладки
+	racesTabItem.Content.Refresh()
 
 	raceList.OnSelected = func(id widget.ListItemID) {
 		if id >= 0 && id < len(races) {
@@ -338,38 +328,51 @@ func loadDataForYear(year string, statusUpdater binding.String, isFirstLoad bool
 			loadRaceResults(year, selectedRace.Round, resultsTable)
 		}
 	}
-
-	if len(races) > 0 {
-		raceList.Select(0)
-	}
+	if len(races) > 0 { raceList.Select(0) }
 
 	loadDrivers(year, driversTable)
 	loadConstructors(year, constructorsTable)
 
 	statusUpdater.Set(fmt.Sprintf("Season %s loaded successfully!", year))
 	if isFirstLoad {
-		seasonEntryForDataView.SetText(year) // Предзаполняем год на экране данных
-		statusTextForInputScreen.Set("")     // Очищаем статус на первом экране
-		window.SetContent(dataViewScreen)    // Переключаемся на экран с данными
+		seasonEntryForDataView.SetText(year)
+		statusTextForInputScreen.Set("")
+		window.SetContent(dataViewScreen)
 	}
+    go func(){
+        time.Sleep(150 * time.Millisecond) // Даем Fyne время отрисовать и обновить размеры
+        if window.Content() == dataViewScreen && tabs != nil {
+             tabs.Refresh() // Обновляем сам контейнер вкладок, чтобы его Size() был актуален
+        }
+        resizeAllVisibleTables()
+    }()
 }
 
-// resetUIDataForDataView сбрасывает UI элементы на экране данных
+func resizeAllVisibleTables() {
+    if window.Content() == dataViewScreen {
+        if resultsTable != nil && numColsResults > 0 {
+            resizeTableColumnsEqually(resultsTable, numColsResults)
+        }
+        if driversTable != nil && numColsDrivers > 0 {
+            resizeTableColumnsEqually(driversTable, numColsDrivers)
+        }
+        if constructorsTable != nil && numColsConstructors > 0 {
+            resizeTableColumnsEqually(constructorsTable, numColsConstructors)
+        }
+    }
+}
+
 func resetUIDataForDataView() {
 	if racesTabItem != nil {
 		racesTabItem.Content = container.NewCenter(widget.NewLabel("Loading data or waiting for year input..."))
 		racesTabItem.Content.Refresh()
 	}
-	if resultsTable != nil {
-		resetTable(resultsTable)
-	}
-	if driversTable != nil {
-		resetTable(driversTable)
-	}
-	if constructorsTable != nil {
-		resetTable(constructorsTable)
-	}
-	// statusTextForDataView.Set("") // Статус будет установлен функцией loadDataForYear
+	if resultsTable != nil { resetTable(resultsTable) }
+	if driversTable != nil { resetTable(driversTable) }
+	if constructorsTable != nil { resetTable(constructorsTable) }
+	numColsResults = 0
+	numColsDrivers = 0
+	numColsConstructors = 0
 }
 
 func resetTable(table *widget.Table) {
@@ -379,35 +382,14 @@ func resetTable(table *widget.Table) {
 
 func showRaceDetails(race Race, infoText *widget.Label, wikiLink *widget.Hyperlink) {
 	text := fmt.Sprintf(
-		"=== %s ===\n"+
-			"Date: %s\n"+
-			"Circuit: %s\n"+
-			"Location: %s, %s\n"+
-			"First Practice: %s %s\n"+
-			"Second Practice: %s %s\n",
-		race.RaceName,
-		race.Date,
-		race.Circuit.CircuitName,
-		race.Circuit.Location.Locality,
-		race.Circuit.Location.Country,
-		race.FirstPractice.Date, race.FirstPractice.Time,
-		race.SecondPractice.Date, race.SecondPractice.Time,
+		"=== %s ===\nDate: %s\nCircuit: %s\nLocation: %s, %s\nFirst Practice: %s %s\nSecond Practice: %s %s\n",
+		race.RaceName, race.Date, race.Circuit.CircuitName, race.Circuit.Location.Locality, race.Circuit.Location.Country,
+		race.FirstPractice.Date, race.FirstPractice.Time, race.SecondPractice.Date, race.SecondPractice.Time,
 	)
-
-	if race.ThirdPractice != nil {
-		text += fmt.Sprintf("Third Practice: %s %s\n",
-			race.ThirdPractice.Date, race.ThirdPractice.Time)
-	}
-	text += fmt.Sprintf("Qualifying: %s %s\n",
-		race.Qualifying.Date, race.Qualifying.Time)
-
-	if race.Sprint != nil {
-		text += fmt.Sprintf("Sprint Race: %s %s",
-			race.Sprint.Date, race.Sprint.Time)
-	}
-	if len(text) > 0 && text[len(text)-1] == '\n' {
-		text = text[:len(text)-1]
-	}
+	if race.ThirdPractice != nil { text += fmt.Sprintf("Third Practice: %s %s\n", race.ThirdPractice.Date, race.ThirdPractice.Time) }
+	text += fmt.Sprintf("Qualifying: %s %s\n", race.Qualifying.Date, race.Qualifying.Time)
+	if race.Sprint != nil { text += fmt.Sprintf("Sprint Race: %s %s", race.Sprint.Date, race.Sprint.Time) }
+	if len(text) > 0 && text[len(text)-1] == '\n' { text = text[:len(text)-1] }
 	infoText.SetText(text)
 	wikiLink.SetText("Wikipedia: " + race.RaceName)
 	wikiLink.SetURL(parseURL(race.URL))
@@ -415,127 +397,95 @@ func showRaceDetails(race Race, infoText *widget.Label, wikiLink *widget.Hyperli
 
 func loadRaceResults(year, round string, table *widget.Table) {
 	resetTable(table)
+	numColsResults = 0
 	if year == "" || round == "" { return }
-
 	url := fmt.Sprintf("https://ergast.com/api/f1/%s/%s/results.json", year, round)
 	resp, err := http.Get(url)
 	if err != nil { fmt.Println("Error fetching race results:", err); return }
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK { fmt.Println("Server error fetching race results:", resp.StatusCode); return }
-
 	body, _ := io.ReadAll(resp.Body)
 	var resultData struct { MRData struct { RaceTable struct { Races []struct { Results []RaceResult `json:"Results"` } `json:"Races"` } `json:"RaceTable"` } `json:"MRData"` }
 	if err := json.Unmarshal(body, &resultData); err != nil { fmt.Println("Error parsing race results JSON:", err); return }
 	if len(resultData.MRData.RaceTable.Races) == 0 || len(resultData.MRData.RaceTable.Races[0].Results) == 0 { resetTable(table); return }
-
 	results := resultData.MRData.RaceTable.Races[0].Results
 	headers := []string{"Pos", "No", "Driver", "Team", "Laps", "Time/Retired", "Status", "Points"}
-	table.Length = func() (int, int) { return len(results) + 1, len(headers) }
+	numColsResults = len(headers)
+	table.Length = func() (int, int) { return len(results) + 1, numColsResults }
 	table.UpdateCell = func(id widget.TableCellID, cell fyne.CanvasObject) {
-		label := cell.(*widget.Label)
-		label.Alignment = fyne.TextAlignLeading
-		if id.Row == 0 {
-			label.Alignment = fyne.TextAlignCenter
-			if id.Col < len(headers) { label.SetText(headers[id.Col]); label.TextStyle = fyne.TextStyle{Bold: true} }
-			return
-		}
+		label := cell.(*widget.Label); label.Alignment = fyne.TextAlignLeading
+		if id.Row == 0 { label.Alignment = fyne.TextAlignCenter; if id.Col < len(headers) { label.SetText(headers[id.Col]); label.TextStyle = fyne.TextStyle{Bold: true} }; return }
 		label.TextStyle = fyne.TextStyle{}
-		resultIndex := id.Row - 1
-		if resultIndex >= len(results) { return }
+		resultIndex := id.Row - 1; if resultIndex >= len(results) { return }
 		result := results[resultIndex]
 		switch id.Col {
-		case 0: label.SetText(result.Position)
-		case 1: label.SetText(result.Number)
-		case 2: label.SetText(fmt.Sprintf("%s %s", result.Driver.GivenName, result.Driver.FamilyName))
-		case 3: label.SetText(result.Constructor.Name)
-		case 4: label.SetText(result.Laps)
+		case 0: label.SetText(result.Position); case 1: label.SetText(result.Number); case 2: label.SetText(fmt.Sprintf("%s %s", result.Driver.GivenName, result.Driver.FamilyName))
+		case 3: label.SetText(result.Constructor.Name); case 4: label.SetText(result.Laps)
 		case 5: if result.Time != nil && result.Time.Time != "" { label.SetText(result.Time.Time) } else { label.SetText(result.Status) }
-		case 6: label.SetText(result.Status)
-		case 7: label.SetText(result.Points)
+		case 6: label.SetText(result.Status); case 7: label.SetText(result.Points)
 		}
 	}
-	table.SetColumnWidth(0, 50); table.SetColumnWidth(1, 50); table.SetColumnWidth(2, 180); table.SetColumnWidth(3, 150);
-	table.SetColumnWidth(4, 60); table.SetColumnWidth(5, 120); table.SetColumnWidth(6, 120); table.SetColumnWidth(7, 60);
 	table.Refresh()
 }
 
 func loadDrivers(year string, table *widget.Table) {
 	resetTable(table)
+	numColsDrivers = 0
 	if year == "" { return }
 	url := fmt.Sprintf("https://ergast.com/api/f1/%s/drivers.json", year)
 	resp, err := http.Get(url)
 	if err != nil { fmt.Println("Error fetching drivers:", err); return }
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK { fmt.Println("Server error fetching drivers:", resp.StatusCode); return }
-
 	body, _ := io.ReadAll(resp.Body)
 	var driverData struct { MRData struct { DriverTable struct { Drivers []Driver `json:"Drivers"` } `json:"DriverTable"` } `json:"MRData"` }
 	if err := json.Unmarshal(body, &driverData); err != nil { fmt.Println("Error parsing drivers JSON:", err); return }
 	if len(driverData.MRData.DriverTable.Drivers) == 0 { resetTable(table); return }
-
 	drivers := driverData.MRData.DriverTable.Drivers
 	headers := []string{"Name", "Code", "Number", "Nationality", "DOB"}
-	table.Length = func() (int, int) { return len(drivers) + 1, len(headers) }
+	numColsDrivers = len(headers)
+	table.Length = func() (int, int) { return len(drivers) + 1, numColsDrivers }
 	table.UpdateCell = func(id widget.TableCellID, cell fyne.CanvasObject) {
-		label := cell.(*widget.Label)
-		label.Alignment = fyne.TextAlignLeading
-		if id.Row == 0 {
-			label.Alignment = fyne.TextAlignCenter
-			if id.Col < len(headers) { label.SetText(headers[id.Col]); label.TextStyle = fyne.TextStyle{Bold: true} }
-			return
-		}
+		label := cell.(*widget.Label); label.Alignment = fyne.TextAlignLeading
+		if id.Row == 0 { label.Alignment = fyne.TextAlignCenter; if id.Col < len(headers) { label.SetText(headers[id.Col]); label.TextStyle = fyne.TextStyle{Bold: true} }; return }
 		label.TextStyle = fyne.TextStyle{}
-		driverIndex := id.Row - 1
-		if driverIndex >= len(drivers) { return }
+		driverIndex := id.Row - 1; if driverIndex >= len(drivers) { return }
 		driver := drivers[driverIndex]
 		switch id.Col {
-		case 0: label.SetText(fmt.Sprintf("%s %s", driver.GivenName, driver.FamilyName))
-		case 1: label.SetText(driver.Code)
-		case 2: label.SetText(driver.PermanentNumber)
-		case 3: label.SetText(driver.Nationality)
-		case 4: label.SetText(driver.DateOfBirth)
+		case 0: label.SetText(fmt.Sprintf("%s %s", driver.GivenName, driver.FamilyName)); case 1: label.SetText(driver.Code)
+		case 2: label.SetText(driver.PermanentNumber); case 3: label.SetText(driver.Nationality); case 4: label.SetText(driver.DateOfBirth)
 		}
 	}
-	table.SetColumnWidth(0, 180); table.SetColumnWidth(1, 80); table.SetColumnWidth(2, 80);
-	table.SetColumnWidth(3, 120); table.SetColumnWidth(4, 120);
 	table.Refresh()
 }
 
 func loadConstructors(year string, table *widget.Table) {
 	resetTable(table)
+	numColsConstructors = 0
 	if year == "" { return }
 	url := fmt.Sprintf("https://ergast.com/api/f1/%s/constructors.json", year)
 	resp, err := http.Get(url)
 	if err != nil { fmt.Println("Error fetching constructors:", err); return }
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK { fmt.Println("Server error fetching constructors:", resp.StatusCode); return }
-
 	body, _ := io.ReadAll(resp.Body)
 	var constructorData struct { MRData struct { ConstructorTable struct { Constructors []Constructor `json:"Constructors"` } `json:"ConstructorTable"` } `json:"MRData"`}
 	if err := json.Unmarshal(body, &constructorData); err != nil { fmt.Println("Error parsing constructors JSON:", err); return }
 	if len(constructorData.MRData.ConstructorTable.Constructors) == 0 { resetTable(table); return }
-
 	constructors := constructorData.MRData.ConstructorTable.Constructors
 	headers := []string{"Name", "Nationality"}
-	table.Length = func() (int, int) { return len(constructors) + 1, len(headers) }
+	numColsConstructors = len(headers)
+	table.Length = func() (int, int) { return len(constructors) + 1, numColsConstructors }
 	table.UpdateCell = func(id widget.TableCellID, cell fyne.CanvasObject) {
-		label := cell.(*widget.Label)
-		label.Alignment = fyne.TextAlignLeading
-		if id.Row == 0 {
-			label.Alignment = fyne.TextAlignCenter
-			if id.Col < len(headers) { label.SetText(headers[id.Col]); label.TextStyle = fyne.TextStyle{Bold: true} }
-			return
-		}
+		label := cell.(*widget.Label); label.Alignment = fyne.TextAlignLeading
+		if id.Row == 0 { label.Alignment = fyne.TextAlignCenter; if id.Col < len(headers) { label.SetText(headers[id.Col]); label.TextStyle = fyne.TextStyle{Bold: true} }; return }
 		label.TextStyle = fyne.TextStyle{}
-		constructorIndex := id.Row - 1
-		if constructorIndex >= len(constructors) { return }
+		constructorIndex := id.Row - 1; if constructorIndex >= len(constructors) { return }
 		constructor := constructors[constructorIndex]
 		switch id.Col {
-		case 0: label.SetText(constructor.Name)
-		case 1: label.SetText(constructor.Nationality)
+		case 0: label.SetText(constructor.Name); case 1: label.SetText(constructor.Nationality)
 		}
 	}
-	table.SetColumnWidth(0, 200); table.SetColumnWidth(1, 150);
 	table.Refresh()
 }
 
