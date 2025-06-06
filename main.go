@@ -1,7 +1,9 @@
 package main
 
 import (
+	"database/sql"
 	"fmt"
+	"log"
 	"net/url"
 	"sort"
 	"strconv"
@@ -13,74 +15,8 @@ import (
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
+	_ "github.com/jackc/pgx/v5/stdlib"
 )
-
-// Структуры для UI, они остаются, т.к. используются для отображения
-type Circuit struct {
-	CircuitID   string
-	CircuitName string
-	URL         string
-	Location    Location
-}
-
-type Location struct {
-	Lat      string
-	Long     string
-	Locality string
-	Country  string
-}
-
-type Session struct {
-	Date string
-	Time string
-}
-
-type Driver struct {
-	DriverID        string
-	PermanentNumber string
-	Code            string
-	URL             string
-	GivenName       string
-	FamilyName      string
-	DateOfBirth     string
-	Nationality     string
-}
-
-type Constructor struct {
-	ConstructorID string
-	URL           string
-	Name          string
-	Nationality   string
-}
-
-type Race struct {
-	RaceIDInternal string // Внутренний ID гонки из CSV для связи
-	Round          string
-	RaceName       string
-	Date           string
-	Circuit        Circuit
-	URL            string
-	FirstPractice  Session
-	SecondPractice Session
-	ThirdPractice  *Session
-	Qualifying     Session
-	Sprint         *Session
-}
-
-type RaceResult struct {
-	Number      string
-	Position    string
-	Points      string
-	Driver      Driver
-	Constructor Constructor
-	Grid        string
-	Laps        string
-	Status      string
-	Time        *struct {
-		Millis string
-		Time   string
-	}
-}
 
 // Глобальные переменные UI
 var (
@@ -109,15 +45,30 @@ var (
 	dataViewScreen fyne.CanvasObject
 )
 
+var db *sql.DB
+
 func main() {
 	myApp := app.New()
 
-	err := loadAllDataFromCSVSync()
+	// Инициализация подключения к БД
+	// Стало:
+	db, err := sql.Open("pgx", "user=yazevstanislav dbname=f1_db host=localhost port=5432 sslmode=disable")
 	if err != nil {
-		fmt.Printf("CRITICAL: Failed to load initial CSV data: %v\n", err)
+		log.Fatalf("Failed to connect to database: %v", err)
+	}
+	defer db.Close()
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatalf("Database connection failed: %v", err)
 	}
 
-	window = myApp.NewWindow("F1 Race Catalog (CSV Data)")
+	err = loadAllDataFromDBSync(db)
+	if err != nil {
+		fmt.Printf("CRITICAL: Failed to load initial data: %v\n", err)
+	}
+
+	window = myApp.NewWindow("F1 Race Catalog (Database)")
 	window.Resize(fyne.NewSize(1200, 700))
 
 	seasonEntryForInputScreen = widget.NewEntry()
@@ -183,7 +134,6 @@ func main() {
 	tabs.OnSelected = func(tabItem *container.TabItem) {
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			// Вызываем напрямую, Fyne должен обработать это в главном потоке
 			resizeAllVisibleTables()
 		}()
 	}
@@ -200,8 +150,8 @@ func loadDataForYear(year string, statusUpdater binding.String, isFirstLoad bool
 		resetUIDataForDataView()
 	}
 
-	if !csvDataLoaded {
-		err := loadAllDataFromCSVSync()
+	if !dbDataLoaded {
+		err := loadAllDataFromDBSync(db)
 		if err != nil {
 			errMsg := "Error loading dataset: " + err.Error()
 			statusUpdater.Set(errMsg)
@@ -234,60 +184,75 @@ func loadDataForYear(year string, statusUpdater binding.String, isFirstLoad bool
 		return
 	}
 
-	var currentSeasonRaces []Race
-	for _, raceCSV := range allRacesData {
-		if raceCSV.Year == year {
-			uiRace := Race{
-				RaceIDInternal: raceCSV.RaceID,
-				Round:          raceCSV.Round,
-				RaceName:       raceCSV.Name,
-				Date:           raceCSV.Date,
-				URL:            csvPointerToOptionalString(raceCSV.URL),
+	var currentSeasonRaces []RaceUI
+	for _, raceDB := range allRacesData {
+		if raceDB.Year == yearInt {
+			uiRace := RaceUI{
+				RaceIDInternal: raceDB.ID,
+				Round:          strconv.Itoa(raceDB.Round),
+				RaceName:       raceDB.Name,
+				Date:           raceDB.Date.Format("2006-01-02"),
 			}
 
-			if circuitCSV, ok := allCircuitsData[raceCSV.CircuitID]; ok {
+			if raceDB.URL.Valid {
+				uiRace.URL = raceDB.URL.String
+			}
+
+			if circuitDB, ok := allCircuitsData[raceDB.CircuitID]; ok {
 				uiRace.Circuit = Circuit{
-					CircuitID:   circuitCSV.CircuitID,
-					CircuitName: circuitCSV.Name,
-					URL:         circuitCSV.URL,
-					Location: Location{
-						Lat:      circuitCSV.Lat,
-						Long:     circuitCSV.Lng,
-						Locality: circuitCSV.Location,
-						Country:  circuitCSV.Country,
-					},
+					ID:       circuitDB.ID,
+					Ref:      circuitDB.Ref,
+					Name:     circuitDB.Name,
+					Location: circuitDB.Location,
+					Country:  circuitDB.Country,
+					Lat:      circuitDB.Lat,
+					Lng:      circuitDB.Lng,
+					Alt:      circuitDB.Alt,
+					URL:      circuitDB.URL,
 				}
 			} else {
-				uiRace.Circuit = Circuit{CircuitName: "Unknown Circuit", Location: Location{Locality: "N/A", Country: "N/A"}}
-				fmt.Printf("Warning: Circuit ID %s not found for race %s (ID: %s)\n", raceCSV.CircuitID, raceCSV.Name, raceCSV.RaceID)
+				uiRace.Circuit = Circuit{Name: "Unknown Circuit"}
+				fmt.Printf("Warning: Circuit ID %s not found for race %s (ID: %s)\n", raceDB.CircuitID, raceDB.Name, raceDB.ID)
 			}
 
-			if raceCSV.Fp1Date != nil && raceCSV.Fp1Time != nil {
-				uiRace.FirstPractice = Session{Date: *raceCSV.Fp1Date, Time: *raceCSV.Fp1Time}
+			if raceDB.Fp1Date.Valid {
+				uiRace.FirstPractice = Session{
+					Date: raceDB.Fp1Date.Time.Format("2006-01-02"),
+					Time: raceDB.Fp1Time.String,
+				}
 			}
-			if raceCSV.Fp2Date != nil && raceCSV.Fp2Time != nil {
-				uiRace.SecondPractice = Session{Date: *raceCSV.Fp2Date, Time: *raceCSV.Fp2Time}
+			if raceDB.Fp2Date.Valid {
+				uiRace.SecondPractice = Session{
+					Date: raceDB.Fp2Date.Time.Format("2006-01-02"),
+					Time: raceDB.Fp2Time.String,
+				}
 			}
-			if raceCSV.Fp3Date != nil && raceCSV.Fp3Time != nil {
-				uiRace.ThirdPractice = &Session{Date: *raceCSV.Fp3Date, Time: *raceCSV.Fp3Time}
+			if raceDB.Fp3Date.Valid {
+				uiRace.ThirdPractice = &Session{
+					Date: raceDB.Fp3Date.Time.Format("2006-01-02"),
+					Time: raceDB.Fp3Time.String,
+				}
 			}
-			if raceCSV.QualiDate != nil && raceCSV.QualiTime != nil {
-				uiRace.Qualifying = Session{Date: *raceCSV.QualiDate, Time: *raceCSV.QualiTime}
+			if raceDB.QualiDate.Valid {
+				uiRace.Qualifying = Session{
+					Date: raceDB.QualiDate.Time.Format("2006-01-02"),
+					Time: raceDB.QualiTime.String,
+				}
 			}
-			if raceCSV.SprintDate != nil && raceCSV.SprintTime != nil {
-				uiRace.Sprint = &Session{Date: *raceCSV.SprintDate, Time: *raceCSV.SprintTime}
+			if raceDB.SprintDate.Valid {
+				uiRace.Sprint = &Session{
+					Date: raceDB.SprintDate.Time.Format("2006-01-02"),
+					Time: raceDB.SprintTime.String,
+				}
 			}
 			currentSeasonRaces = append(currentSeasonRaces, uiRace)
 		}
 	}
 
 	sort.SliceStable(currentSeasonRaces, func(i, j int) bool {
-		roundI, errI := strconv.Atoi(currentSeasonRaces[i].Round)
-		roundJ, errJ := strconv.Atoi(currentSeasonRaces[j].Round)
-		if errI == nil && errJ == nil {
-			return roundI < roundJ
-		}
-		return currentSeasonRaces[i].Round < currentSeasonRaces[j].Round
+		roundI, _ := strconv.Atoi(currentSeasonRaces[i].Round)
+		roundJ, _ := strconv.Atoi(currentSeasonRaces[j].Round)
+		return roundI < roundJ
 	})
 
 	if len(currentSeasonRaces) == 0 {
@@ -360,80 +325,83 @@ func loadDataForYear(year string, statusUpdater binding.String, isFirstLoad bool
 		time.Sleep(200 * time.Millisecond)
 		if window.Content() == dataViewScreen && tabs != nil {
 			tabs.Refresh()
-			// Вызываем напрямую, Fyne должен обработать это в главном потоке
 			resizeAllVisibleTables()
 		}
 	}()
 }
 
-func loadRaceResults(selectedRace Race, table *widget.Table) {
+func loadRaceResults(selectedRace RaceUI, table *widget.Table) {
 	resetTable(table)
 	numColsResults = 0
-	if selectedRace.RaceIDInternal == "" || !csvDataLoaded {
+	if selectedRace.RaceIDInternal == "" || !dbDataLoaded {
 		return
 	}
 
 	var raceResultsForDisplay []RaceResult
-	for _, resultCSV := range allResultsData {
-		if resultCSV.RaceID == selectedRace.RaceIDInternal {
+	for _, resultDB := range allResultsData {
+		if resultDB.RaceID == selectedRace.RaceIDInternal {
 			uiResult := RaceResult{
-				Grid:   resultCSV.Grid,
-				Laps:   resultCSV.Laps,
-				Points: resultCSV.Points,
-				Number: csvPointerToDefaultString(resultCSV.Number, ""),
+				Grid:   strconv.Itoa(resultDB.Grid),
+				Laps:   strconv.Itoa(resultDB.Laps),
+				Points: fmt.Sprintf("%.1f", resultDB.Points),
 			}
 
-			if resultCSV.Position != nil {
-				uiResult.Position = *resultCSV.Position
-				if uiResult.Position == `\N` {
-					uiResult.Position = csvStringValueToDefault(resultCSV.PositionText, "N/A")
-				}
+			if resultDB.Number.Valid {
+				uiResult.Number = strconv.Itoa(int(resultDB.Number.Int32))
 			} else {
-				uiResult.Position = csvStringValueToDefault(resultCSV.PositionText, "N/A")
+				uiResult.Number = ""
 			}
 
-			if driverCSV, ok := allDriversData[resultCSV.DriverID]; ok {
+			if resultDB.Position.Valid {
+				uiResult.Position = strconv.Itoa(int(resultDB.Position.Int32))
+			} else {
+				uiResult.Position = resultDB.PositionText
+			}
+
+			if driverDB, ok := allDriversData[resultDB.DriverID]; ok {
 				uiResult.Driver = Driver{
-					DriverID:        driverCSV.DriverID,
-					GivenName:       driverCSV.Forename,
-					FamilyName:      driverCSV.Surname,
-					Nationality:     driverCSV.Nationality,
-					DateOfBirth:     driverCSV.DOB,
-					URL:             driverCSV.URL,
-					PermanentNumber: csvPointerToDefaultString(driverCSV.Number, ""),
-					Code:            csvPointerToDefaultString(driverCSV.Code, ""),
+					ID:          driverDB.ID,
+					Ref:         driverDB.Ref,
+					Number:      driverDB.Number,
+					Code:        driverDB.Code,
+					Forename:    driverDB.Forename,
+					Surname:     driverDB.Surname,
+					DOB:         driverDB.DOB,
+					Nationality: driverDB.Nationality,
+					URL:         driverDB.URL,
 				}
 			} else {
-				uiResult.Driver = Driver{GivenName: "Unknown", FamilyName: "Driver"}
-				fmt.Printf("Warning: Driver ID %s not found for result %s\n", resultCSV.DriverID, resultCSV.ResultID)
+				uiResult.Driver = Driver{Forename: "Unknown", Surname: "Driver"}
+				fmt.Printf("Warning: Driver ID %s not found for result %s\n", resultDB.DriverID, resultDB.ID)
 			}
 
-			if constructorCSV, ok := allConstructorsData[resultCSV.ConstructorID]; ok {
+			if constructorDB, ok := allConstructorsData[resultDB.ConstructorID]; ok {
 				uiResult.Constructor = Constructor{
-					ConstructorID: constructorCSV.ConstructorID,
-					Name:          constructorCSV.Name,
-					Nationality:   constructorCSV.Nationality,
-					URL:           constructorCSV.URL,
+					ID:          constructorDB.ID,
+					Ref:         constructorDB.Ref,
+					Name:        constructorDB.Name,
+					Nationality: constructorDB.Nationality,
+					URL:         constructorDB.URL,
 				}
 			} else {
 				uiResult.Constructor = Constructor{Name: "Unknown Team"}
-				fmt.Printf("Warning: Constructor ID %s not found for result %s\n", resultCSV.ConstructorID, resultCSV.ResultID)
+				fmt.Printf("Warning: Constructor ID %s not found for result %s\n", resultDB.ConstructorID, resultDB.ID)
 			}
 
-			if statusCSV, ok := allStatusesData[resultCSV.StatusID]; ok {
-				uiResult.Status = statusCSV.Status
+			if statusDB, ok := allStatusesData[resultDB.StatusID]; ok {
+				uiResult.Status = statusDB.Status
 			} else {
 				uiResult.Status = "Unknown"
-				fmt.Printf("Warning: Status ID %s not found for result %s\n", resultCSV.StatusID, resultCSV.ResultID)
+				fmt.Printf("Warning: Status ID %s not found for result %s\n", resultDB.StatusID, resultDB.ID)
 			}
 
-			if resultCSV.Time != nil || resultCSV.Milliseconds != nil {
+			if resultDB.Time.Valid || resultDB.Milliseconds.Valid {
 				uiResult.Time = &struct{ Millis, Time string }{}
-				if resultCSV.Time != nil {
-					uiResult.Time.Time = *resultCSV.Time
+				if resultDB.Time.Valid {
+					uiResult.Time.Time = resultDB.Time.String
 				}
-				if resultCSV.Milliseconds != nil {
-					uiResult.Time.Millis = *resultCSV.Milliseconds
+				if resultDB.Milliseconds.Valid {
+					uiResult.Time.Millis = strconv.Itoa(int(resultDB.Milliseconds.Int32))
 				}
 			}
 			raceResultsForDisplay = append(raceResultsForDisplay, uiResult)
@@ -472,7 +440,7 @@ func loadRaceResults(selectedRace Race, table *widget.Table) {
 		case 1:
 			label.SetText(result.Number)
 		case 2:
-			label.SetText(fmt.Sprintf("%s %s", result.Driver.GivenName, result.Driver.FamilyName))
+			label.SetText(fmt.Sprintf("%s %s", result.Driver.Forename, result.Driver.Surname))
 		case 3:
 			label.SetText(result.Constructor.Name)
 		case 4:
@@ -495,16 +463,17 @@ func loadRaceResults(selectedRace Race, table *widget.Table) {
 func loadDrivers(year string, table *widget.Table) {
 	resetTable(table)
 	numColsDrivers = 0
-	if year == "" || !csvDataLoaded {
+	if year == "" || !dbDataLoaded {
 		return
 	}
 
 	driverIDsInSeason := make(map[string]bool)
-	for _, raceCSV := range allRacesData {
-		if raceCSV.Year == year {
-			for _, resultCSV := range allResultsData {
-				if resultCSV.RaceID == raceCSV.RaceID {
-					driverIDsInSeason[resultCSV.DriverID] = true
+	yearInt, _ := strconv.Atoi(year)
+	for _, raceDB := range allRacesData {
+		if raceDB.Year == yearInt {
+			for _, resultDB := range allResultsData {
+				if resultDB.RaceID == raceDB.ID {
+					driverIDsInSeason[resultDB.DriverID] = true
 				}
 			}
 		}
@@ -512,25 +481,16 @@ func loadDrivers(year string, table *widget.Table) {
 
 	var driversForDisplay []Driver
 	for driverID := range driverIDsInSeason {
-		if driverCSV, ok := allDriversData[driverID]; ok {
-			driversForDisplay = append(driversForDisplay, Driver{
-				DriverID:        driverCSV.DriverID,
-				GivenName:       driverCSV.Forename,
-				FamilyName:      driverCSV.Surname,
-				Nationality:     driverCSV.Nationality,
-				DateOfBirth:     driverCSV.DOB,
-				URL:             driverCSV.URL,
-				PermanentNumber: csvPointerToDefaultString(driverCSV.Number, "N/A"),
-				Code:            csvPointerToDefaultString(driverCSV.Code, "N/A"),
-			})
+		if driverDB, ok := allDriversData[driverID]; ok {
+			driversForDisplay = append(driversForDisplay, driverDB)
 		}
 	}
 
 	sort.Slice(driversForDisplay, func(i, j int) bool {
-		if driversForDisplay[i].FamilyName != driversForDisplay[j].FamilyName {
-			return driversForDisplay[i].FamilyName < driversForDisplay[j].FamilyName
+		if driversForDisplay[i].Surname != driversForDisplay[j].Surname {
+			return driversForDisplay[i].Surname < driversForDisplay[j].Surname
 		}
-		return driversForDisplay[i].GivenName < driversForDisplay[j].GivenName
+		return driversForDisplay[i].Forename < driversForDisplay[j].Forename
 	})
 
 	if len(driversForDisplay) == 0 {
@@ -561,15 +521,23 @@ func loadDrivers(year string, table *widget.Table) {
 		driver := drivers[driverIndex]
 		switch id.Col {
 		case 0:
-			label.SetText(fmt.Sprintf("%s %s", driver.GivenName, driver.FamilyName))
+			label.SetText(fmt.Sprintf("%s %s", driver.Forename, driver.Surname))
 		case 1:
-			label.SetText(driver.Code)
+			if driver.Code.Valid {
+				label.SetText(driver.Code.String)
+			} else {
+				label.SetText("N/A")
+			}
 		case 2:
-			label.SetText(driver.PermanentNumber)
+			if driver.Number.Valid {
+				label.SetText(strconv.Itoa(int(driver.Number.Int32)))
+			} else {
+				label.SetText("N/A")
+			}
 		case 3:
 			label.SetText(driver.Nationality)
 		case 4:
-			label.SetText(driver.DateOfBirth)
+			label.SetText(driver.DOB.Format("2006-01-02"))
 		}
 	}
 	table.Refresh()
@@ -578,16 +546,17 @@ func loadDrivers(year string, table *widget.Table) {
 func loadConstructors(year string, table *widget.Table) {
 	resetTable(table)
 	numColsConstructors = 0
-	if year == "" || !csvDataLoaded {
+	if year == "" || !dbDataLoaded {
 		return
 	}
 
 	constructorIDsInSeason := make(map[string]bool)
-	for _, raceCSV := range allRacesData {
-		if raceCSV.Year == year {
-			for _, resultCSV := range allResultsData {
-				if resultCSV.RaceID == raceCSV.RaceID {
-					constructorIDsInSeason[resultCSV.ConstructorID] = true
+	yearInt, _ := strconv.Atoi(year)
+	for _, raceDB := range allRacesData {
+		if raceDB.Year == yearInt {
+			for _, resultDB := range allResultsData {
+				if resultDB.RaceID == raceDB.ID {
+					constructorIDsInSeason[resultDB.ConstructorID] = true
 				}
 			}
 		}
@@ -595,12 +564,13 @@ func loadConstructors(year string, table *widget.Table) {
 
 	var constructorsForDisplay []Constructor
 	for constructorID := range constructorIDsInSeason {
-		if constructorCSV, ok := allConstructorsData[constructorID]; ok {
+		if constructorDB, ok := allConstructorsData[constructorID]; ok {
 			constructorsForDisplay = append(constructorsForDisplay, Constructor{
-				ConstructorID: constructorCSV.ConstructorID,
-				Name:          constructorCSV.Name,
-				Nationality:   constructorCSV.Nationality,
-				URL:           constructorCSV.URL,
+				ID:          constructorDB.ID,
+				Ref:         constructorDB.Ref,
+				Name:        constructorDB.Name,
+				Nationality: constructorDB.Nationality,
+				URL:         constructorDB.URL,
 			})
 		}
 	}
@@ -672,7 +642,7 @@ func resizeTableColumnsEqually(table *widget.Table, numCols int) {
 func resizeAllVisibleTables() {
 	if window.Content() == dataViewScreen && tabs != nil && tabs.Selected() != nil {
 		selectedTab := tabs.Selected()
-		if len(tabs.Items) > 3 { // Убедимся что есть вкладки с индексами 1, 2, 3
+		if len(tabs.Items) > 3 {
 			if selectedTab == tabs.Items[1] {
 				if resultsTable != nil && numColsResults > 0 {
 					resizeTableColumnsEqually(resultsTable, numColsResults)
@@ -720,12 +690,12 @@ func resetTable(table *widget.Table) {
 	table.Refresh()
 }
 
-func showRaceDetails(race Race, infoText *widget.Label, wikiLink *widget.Hyperlink) {
+func showRaceDetails(race RaceUI, infoText *widget.Label, wikiLink *widget.Hyperlink) {
 	text := fmt.Sprintf(
 		"=== %s ===\nDate: %s\nCircuit: %s\nLocation: %s, %s\n",
-		race.RaceName, race.Date, race.Circuit.CircuitName,
-		csvStringValueToDefault(race.Circuit.Location.Locality, "N/A"),
-		csvStringValueToDefault(race.Circuit.Location.Country, "N/A"),
+		race.RaceName, race.Date, race.Circuit.Name,
+		race.Circuit.Location,
+		race.Circuit.Country,
 	)
 
 	if race.FirstPractice.Date != "" || race.FirstPractice.Time != "" {
