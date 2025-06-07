@@ -75,7 +75,7 @@ func loadAllDataFromDBSync(db *sql.DB) error {
 }
 
 func loadCircuitsFromDB(db *sql.DB) (map[string]Circuit, error) {
-	query := `SELECT circuit_id, circuit_ref, name, location, country, lat, lng, alt, url FROM f1.circuits`
+	query := `SELECT circuitId, circuitRef, name, location, country, lat, lng, alt, url FROM circuits`
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -85,20 +85,18 @@ func loadCircuitsFromDB(db *sql.DB) (map[string]Circuit, error) {
 	circuits := make(map[string]Circuit)
 	for rows.Next() {
 		var c Circuit
-		var alt sql.NullString
-		err := rows.Scan(&c.ID, &c.Ref, &c.Name, &c.Location, &c.Country, &c.Lat, &c.Lng, &alt, &c.URL)
+		err := rows.Scan(&c.ID, &c.Ref, &c.Name, &c.Location, &c.Country, &c.Lat, &c.Lng, &c.Alt, &c.URL)
 		if err != nil {
 			log.Printf("Error scanning circuit: %v", err)
 			continue
 		}
-		c.Alt = alt
 		circuits[c.ID] = c
 	}
 	return circuits, nil
 }
 
 func loadConstructorsFromDB(db *sql.DB) (map[string]Constructor, error) {
-	query := `SELECT constructor_id, constructor_ref, name, nationality, url FROM f1.constructors`
+	query := `SELECT constructorId, constructorRef, name, nationality, url FROM constructors`
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -119,7 +117,7 @@ func loadConstructorsFromDB(db *sql.DB) (map[string]Constructor, error) {
 }
 
 func loadDriversFromDB(db *sql.DB) (map[string]Driver, error) {
-	query := `SELECT driver_id, driver_ref, number, code, forename, surname, dob, nationality, url FROM f1.drivers`
+	query := `SELECT driverId, driverRef, number, code, forename, surname, dob, nationality, url FROM drivers`
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -129,24 +127,20 @@ func loadDriversFromDB(db *sql.DB) (map[string]Driver, error) {
 	drivers := make(map[string]Driver)
 	for rows.Next() {
 		var d Driver
-		var number sql.NullInt32
-		var code sql.NullString
-		err := rows.Scan(&d.ID, &d.Ref, &number, &code, &d.Forename, &d.Surname, &d.DOB, &d.Nationality, &d.URL)
+		err := rows.Scan(&d.ID, &d.Ref, &d.Number, &d.Code, &d.Forename, &d.Surname, &d.DOB, &d.Nationality, &d.URL)
 		if err != nil {
 			log.Printf("Error scanning driver: %v", err)
 			continue
 		}
-		d.Number = number
-		d.Code = code
 		drivers[d.ID] = d
 	}
 	return drivers, nil
 }
 
 func loadRacesFromDB(db *sql.DB) ([]Race, error) {
-	query := `SELECT race_id, year, round, circuit_id, name, date, time, url, 
+	query := `SELECT raceId, year, round, circuitId, name, date, time, url, 
 		fp1_date, fp1_time, fp2_date, fp2_time, fp3_date, fp3_time, 
-		quali_date, quali_time, sprint_date, sprint_time FROM f1.races`
+		quali_date, quali_time, sprint_date, sprint_time FROM races`
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -156,41 +150,23 @@ func loadRacesFromDB(db *sql.DB) ([]Race, error) {
 	var races []Race
 	for rows.Next() {
 		var r Race
-		var time, url sql.NullString
-		var fp1Date, fp2Date, fp3Date, qualiDate, sprintDate sql.NullTime
-		var fp1Time, fp2Time, fp3Time, qualiTime, sprintTime sql.NullString
-
-		err := rows.Scan(&r.ID, &r.Year, &r.Round, &r.CircuitID, &r.Name, &r.Date, &time, &url,
-			&fp1Date, &fp1Time, &fp2Date, &fp2Time, &fp3Date, &fp3Time,
-			&qualiDate, &qualiTime, &sprintDate, &sprintTime)
+		err := rows.Scan(&r.ID, &r.Year, &r.Round, &r.CircuitID, &r.Name, &r.Date, &r.Time, &r.URL,
+			&r.Fp1Date, &r.Fp1Time, &r.Fp2Date, &r.Fp2Time, &r.Fp3Date, &r.Fp3Time,
+			&r.QualiDate, &r.QualiTime, &r.SprintDate, &r.SprintTime)
 
 		if err != nil {
 			log.Printf("Error scanning race: %v", err)
 			continue
 		}
-
-		r.Time = time
-		r.URL = url
-		r.Fp1Date = fp1Date
-		r.Fp1Time = fp1Time
-		r.Fp2Date = fp2Date
-		r.Fp2Time = fp2Time
-		r.Fp3Date = fp3Date
-		r.Fp3Time = fp3Time
-		r.QualiDate = qualiDate
-		r.QualiTime = qualiTime
-		r.SprintDate = sprintDate
-		r.SprintTime = sprintTime
-
 		races = append(races, r)
 	}
 	return races, nil
 }
 
 func loadResultsFromDB(db *sql.DB) ([]Result, error) {
-	query := `SELECT result_id, race_id, driver_id, constructor_id, number, grid, 
-		position, position_text, position_order, points, laps, time, milliseconds, 
-		fastest_lap, rank, fastest_lap_time, fastest_lap_speed, status_id FROM f1.results`
+	query := `SELECT resultId, raceId, driverId, constructorId, number, grid, 
+		position, positionText, positionOrder, points, laps, time, milliseconds, 
+		fastestLap, rank, fastestLapTime, fastestLapSpeed, statusId FROM results`
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -200,35 +176,21 @@ func loadResultsFromDB(db *sql.DB) ([]Result, error) {
 	var results []Result
 	for rows.Next() {
 		var res Result
-		var number, position, fastestLap, rank sql.NullInt32
-		var time, fastestLapTime, fastestLapSpeed sql.NullString
-		var milliseconds sql.NullInt32
-
-		err := rows.Scan(&res.ID, &res.RaceID, &res.DriverID, &res.ConstructorID, &number, &res.Grid,
-			&position, &res.PositionText, &res.PositionOrder, &res.Points, &res.Laps, &time, &milliseconds,
-			&fastestLap, &rank, &fastestLapTime, &fastestLapSpeed, &res.StatusID)
+		err := rows.Scan(&res.ID, &res.RaceID, &res.DriverID, &res.ConstructorID, &res.Number, &res.Grid,
+			&res.Position, &res.PositionText, &res.PositionOrder, &res.Points, &res.Laps, &res.Time, &res.Milliseconds,
+			&res.FastestLap, &res.Rank, &res.FastestLapTime, &res.FastestLapSpeed, &res.StatusID)
 
 		if err != nil {
 			log.Printf("Error scanning result: %v", err)
 			continue
 		}
-
-		res.Number = number
-		res.Position = position
-		res.Time = time
-		res.Milliseconds = milliseconds
-		res.FastestLap = fastestLap
-		res.Rank = rank
-		res.FastestLapTime = fastestLapTime
-		res.FastestLapSpeed = fastestLapSpeed
-
 		results = append(results, res)
 	}
 	return results, nil
 }
 
 func loadStatusesFromDB(db *sql.DB) (map[string]Status, error) {
-	query := `SELECT status_id, status FROM f1.status`
+	query := `SELECT statusId, status FROM status`
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err
@@ -249,7 +211,7 @@ func loadStatusesFromDB(db *sql.DB) (map[string]Status, error) {
 }
 
 func loadSeasonsFromDB(db *sql.DB) (map[string]Season, error) {
-	query := `SELECT year, url FROM f1.seasons`
+	query := `SELECT year, url FROM seasons`
 	rows, err := db.Query(query)
 	if err != nil {
 		return nil, err

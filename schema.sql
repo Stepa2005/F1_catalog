@@ -1,10 +1,8 @@
--- Создаем схему для данных F1
-CREATE SCHEMA f1;
+-- schema.sql (ИСПРАВЛЕННАЯ ВЕРСИЯ)
 
--- Таблица Circuits
-CREATE TABLE f1.circuits (
-    circuit_id TEXT PRIMARY KEY,
-    circuit_ref TEXT NOT NULL,
+CREATE TABLE circuits (
+    circuitId TEXT PRIMARY KEY,
+    circuitRef TEXT NOT NULL,
     name TEXT NOT NULL,
     location TEXT NOT NULL,
     country TEXT NOT NULL,
@@ -14,20 +12,18 @@ CREATE TABLE f1.circuits (
     url TEXT NOT NULL
 );
 
--- Таблица Constructors
-CREATE TABLE f1.constructors (
-    constructor_id TEXT PRIMARY KEY,
-    constructor_ref TEXT NOT NULL,
+CREATE TABLE constructors (
+    constructorId TEXT PRIMARY KEY,
+    constructorRef TEXT NOT NULL,
     name TEXT NOT NULL,
     nationality TEXT NOT NULL,
     url TEXT NOT NULL
 );
 
--- Таблица Drivers
-CREATE TABLE f1.drivers (
-    driver_id TEXT PRIMARY KEY,
-    driver_ref TEXT NOT NULL,
-    number TEXT,
+CREATE TABLE drivers (
+    driverId TEXT PRIMARY KEY,
+    driverRef TEXT NOT NULL,
+    number INTEGER,
     code TEXT,
     forename TEXT NOT NULL,
     surname TEXT NOT NULL,
@@ -36,12 +32,21 @@ CREATE TABLE f1.drivers (
     url TEXT NOT NULL
 );
 
--- Таблица Races
-CREATE TABLE f1.races (
-    race_id TEXT PRIMARY KEY,
+CREATE TABLE seasons (
+    year INTEGER PRIMARY KEY,
+    url TEXT NOT NULL
+);
+
+CREATE TABLE status (
+    statusId TEXT PRIMARY KEY,
+    status TEXT NOT NULL
+);
+
+CREATE TABLE races (
+    raceId TEXT PRIMARY KEY,
     year INTEGER NOT NULL,
     round INTEGER NOT NULL,
-    circuit_id TEXT REFERENCES f1.circuits(circuit_id),
+    circuitId TEXT REFERENCES circuits(circuitId),
     name TEXT NOT NULL,
     date DATE NOT NULL,
     time TIME,
@@ -58,36 +63,23 @@ CREATE TABLE f1.races (
     sprint_time TIME
 );
 
--- Таблица Results
-CREATE TABLE f1.results (
-    result_id TEXT PRIMARY KEY,
-    race_id TEXT REFERENCES f1.races(race_id),
-    driver_id TEXT REFERENCES f1.drivers(driver_id),
-    constructor_id TEXT REFERENCES f1.constructors(constructor_id),
+CREATE TABLE results (
+    resultId TEXT PRIMARY KEY,
+    raceId TEXT REFERENCES races(raceId),
+    driverId TEXT REFERENCES drivers(driverId),
+    constructorId TEXT REFERENCES constructors(constructorId),
     number INTEGER,
     grid INTEGER NOT NULL,
     position INTEGER,
-    position_text TEXT NOT NULL,
-    position_order INTEGER NOT NULL,
+    positionText TEXT NOT NULL,
+    positionOrder INTEGER NOT NULL,
     points FLOAT NOT NULL,
     laps INTEGER NOT NULL,
     time TEXT,
     milliseconds INTEGER,
-    fastest_lap INTEGER,
+    fastestLap INTEGER,
     rank INTEGER,
-    fastest_lap_time TEXT,
-    fastest_lap_speed FLOAT,
-    status_id TEXT NOT NULL
-);
-
--- Таблица Status
-CREATE TABLE f1.status (
-    status_id TEXT PRIMARY KEY,
-    status TEXT NOT NULL
-);
-
--- Таблица Seasons
-CREATE TABLE f1.seasons (
-    year INTEGER PRIMARY KEY,
-    url TEXT NOT NULL
+    fastestLapTime TEXT,
+    fastestLapSpeed TEXT,
+    statusId TEXT NOT NULL REFERENCES status(statusId)
 );

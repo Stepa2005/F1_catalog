@@ -2,11 +2,16 @@ package main
 
 import (
 	"database/sql"
+	"encoding/csv"
 	"fmt"
+	"io"
 	"log"
 	"net/url"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"fyne.io/fyne/v2"
@@ -15,10 +20,9 @@ import (
 	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
-	_ "github.com/jackc/pgx/v5/stdlib"
+	_ "github.com/mattn/go-sqlite3" 
 )
-
-// Глобальные переменные UI
+// Глобальные переменные UI (без изменений)
 var (
 	window fyne.Window
 	tabs   *container.AppTabs
@@ -46,22 +50,17 @@ var (
 )
 
 var db *sql.DB
+const dbFileName = "f1_data.db" 
 
 func main() {
 	myApp := app.New()
 
-	// Инициализация подключения к БД
-	// Стало:
-	db, err := sql.Open("pgx", "user=yazevstanislav dbname=f1_db host=localhost port=5432 sslmode=disable")
+	var err error
+	db, err = initDB(dbFileName)
 	if err != nil {
-		log.Fatalf("Failed to connect to database: %v", err)
+		log.Fatalf("Database initialization failed: %v", err)
 	}
 	defer db.Close()
-
-	err = db.Ping()
-	if err != nil {
-		log.Fatalf("Database connection failed: %v", err)
-	}
 
 	err = loadAllDataFromDBSync(db)
 	if err != nil {
@@ -126,10 +125,10 @@ func main() {
 	tabs = container.NewAppTabs()
 	initialRacesContent := container.NewCenter(widget.NewLabel("Data will appear here after loading a season."))
 	racesTabItem = container.NewTabItem("Races Calendar", initialRacesContent)
-	tabs.Append(racesTabItem)                                                                  // Индекс 0
-	tabs.Append(container.NewTabItem("Race Results", container.NewVScroll(resultsTable)))      // Индекс 1
-	tabs.Append(container.NewTabItem("Drivers", container.NewVScroll(driversTable)))           // Индекс 2
-	tabs.Append(container.NewTabItem("Constructors", container.NewVScroll(constructorsTable))) // Индекс 3
+	tabs.Append(racesTabItem)
+	tabs.Append(container.NewTabItem("Race Results", container.NewVScroll(resultsTable)))
+	tabs.Append(container.NewTabItem("Drivers", container.NewVScroll(driversTable)))
+	tabs.Append(container.NewTabItem("Constructors", container.NewVScroll(constructorsTable)))
 
 	tabs.OnSelected = func(tabItem *container.TabItem) {
 		go func() {
@@ -142,6 +141,144 @@ func main() {
 
 	window.SetContent(inputScreen)
 	window.ShowAndRun()
+}
+
+// initDB проверяет, существует ли файл БД. Если нет, создает его, применяет схему и заполняет данными из CSV.
+func initDB(dbPath string) (*sql.DB, error) {
+	_, err := os.Stat(dbPath)
+	dbExists := !os.IsNotExist(err)
+
+	// Включаем поддержку foreign keys для SQLite
+	db, err := sql.Open("sqlite3", fmt.Sprintf("file:%s?_foreign_keys=on", dbPath))
+	if err != nil {
+		return nil, fmt.Errorf("failed to open database: %w", err)
+	}
+
+	if !dbExists {
+		fmt.Println("Database file not found. Creating and populating...")
+
+		// Создание таблиц по схеме
+		schemaSQL, err := os.ReadFile("schema.sql")
+		if err != nil {
+			return nil, fmt.Errorf("failed to read schema.sql: %w", err)
+		}
+		_, err = db.Exec(string(schemaSQL))
+		if err != nil {
+			return nil, fmt.Errorf("failed to execute schema: %w", err)
+		}
+		fmt.Println("Tables created successfully.")
+
+		// Заполнение таблиц из CSV
+		err = populateDBFromCSVs(db, "dataset")
+		if err != nil {
+			db.Close()
+			os.Remove(dbPath)
+			return nil, fmt.Errorf("failed to populate database: %w", err)
+		}
+		fmt.Println("Database populated successfully.")
+	} else {
+		fmt.Println("Using existing database file.")
+	}
+
+	return db, nil
+}
+
+// populateDBFromCSVs управляет процессом загрузки данных из всех CSV-файлов.
+func populateDBFromCSVs(db *sql.DB, dir string) error {
+	loadOrder := []struct {
+		File  string
+		Table string
+	}{
+		{"circuits.csv", "circuits"},
+		{"constructors.csv", "constructors"},
+		{"drivers.csv", "drivers"},
+		{"seasons.csv", "seasons"},
+		{"status.csv", "status"},
+		{"races.csv", "races"},
+		{"results.csv", "results"},
+		// Остальные файлы можно добавить здесь, если они нужны
+		// {"lap_times.csv", "lap_times"},
+		// {"pit_stops.csv", "pit_stops"},
+		// {"qualifying.csv", "qualifying"},
+		// ...
+	}
+
+	for _, item := range loadOrder {
+		path := filepath.Join(dir, item.File)
+		fmt.Printf("Loading %s into %s table...\n", item.File, item.Table)
+		if err := loadCSVToTable(db, path, item.Table); err != nil {
+			return fmt.Errorf("error loading %s: %w", path, err)
+		}
+	}
+	return nil
+}
+
+func loadCSVToTable(db *sql.DB, filePath, tableName string) error {
+	file, err := os.Open(filePath)
+	if err != nil {
+		return fmt.Errorf("could not open file %s: %w", filePath, err)
+	}
+	defer file.Close()
+
+	reader := csv.NewReader(file)
+	header, err := reader.Read()
+	if err != nil {
+		if err == io.EOF {
+			return fmt.Errorf("file %s is empty or has no header", filePath)
+		}
+		return fmt.Errorf("failed to read header from %s: %w", filePath, err)
+	}
+
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	// Откатываем транзакцию в случае любой паники или ошибки
+	defer tx.Rollback()
+
+	query := fmt.Sprintf("INSERT INTO %s (\"%s\") VALUES (%s)",
+		tableName,
+		strings.Join(header, "\",\""),
+		"?"+strings.Repeat(",?", len(header)-1))
+
+	stmt, err := tx.Prepare(query)
+	if err != nil {
+		return fmt.Errorf("failed to prepare statement for table %s. Query: %s. Error: %w", tableName, query, err)
+	}
+	defer stmt.Close()
+
+	recordCount := 0
+	for {
+		record, err := reader.Read()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("error reading record from %s on line %d: %w", filePath, recordCount+2, err)
+		}
+
+		args := make([]interface{}, len(record))
+		for i, v := range record {
+			if v == `\N` {
+				args[i] = nil
+			} else {
+				args[i] = v
+			}
+		}
+
+		_, err = stmt.Exec(args...)
+		if err != nil {
+			return fmt.Errorf("failed to insert record into %s (line %d: %v): %w", tableName, recordCount+2, record, err)
+		}
+		recordCount++
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("failed to commit transaction for table %s: %w", tableName, err)
+	}
+
+	fmt.Printf("Successfully inserted %d records into table '%s'.\n", recordCount, tableName)
+	return nil
 }
 
 func loadDataForYear(year string, statusUpdater binding.String, isFirstLoad bool) {
